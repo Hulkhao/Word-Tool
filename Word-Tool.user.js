@@ -1,18 +1,21 @@
 // ==UserScript==
 // @name         Word Tool - 选词发音 & 翻译（Edge/Chrome）
 // @namespace    simpread/word-tool
-// @version      4.5.3
+// @version      4.6.0
 // @description  双击单词/技术标识符发音（_/-/camelCase 自动拆词顺序朗读 + 子词逐行释义 + 有道真人音频自动响度归一化 + TTS兜底，CSP兼容）+ ALT拖动选词翻译 + 整页翻译 + 输入框连续3次空格翻译成英文
 // @match        *://*/*
 // @run-at       document-idle
-// @sandbox      JavaScript
+// @sandbox      DOM
+// @inject-into  content
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
-// @grant        unsafeWindow
 // @connect      dict.youdao.com
 // @connect      *.youdao.com
+// @supportURL   https://github.com/Hulkhao/Word-Tool/issues/new
+// @downloadURL  https://raw.githubusercontent.com/Hulkhao/Word-Tool/main/Word-Tool.user.js
+// @updateURL    https://raw.githubusercontent.com/Hulkhao/Word-Tool/main/Word-Tool.user.js
 // ==/UserScript==
 
 (function () {
@@ -42,10 +45,9 @@
 
   function getPageWindow() {
     try {
-      return typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-    } catch {
-      return window;
-    }
+      if (typeof unsafeWindow !== 'undefined' && unsafeWindow) return unsafeWindow;
+    } catch {}
+    return window;
   }
 
   function getTranslatorAPI() {
@@ -1658,8 +1660,11 @@
     GM_registerMenuCommand('Word Tool 设置', showSettings);
     GM_registerMenuCommand('检测 Translator API', checkTranslatorStatus);
 
+    let sandboxMode = 'unknown';
+    try { sandboxMode = GM_info?.sandboxMode || 'unknown'; } catch {}
+
     console.log(
-      `[Word Tool] v4.5.3 initialized | browser=${browserName()} | Translator=${Boolean(getTranslatorAPI())}`
+      `[Word Tool] v4.6.0 initialized | browser=${browserName()} | sandbox=${sandboxMode} | Translator=${Boolean(getTranslatorAPI())}`
     );
   }
 
