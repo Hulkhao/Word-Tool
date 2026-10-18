@@ -106,7 +106,7 @@ Windows、macOS、Linux 等支持 Chrome / Edge / Firefox 的操作系统。
 
 ### 📜 License
 
-MIT License
+GPL 3
 
 ---
 
