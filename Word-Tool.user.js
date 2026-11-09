@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Word Tool - 选词发音 & 翻译（Edge/Chrome）
 // @namespace    simpread/word-tool
-// @version      4.6.2
+// @version      4.6.3
 // @description  双击单词/技术标识符发音（_/-/camelCase 自动拆词顺序朗读 + 子词逐行释义 + 有道真人音频自动响度归一化 + TTS兜底，CSP兼容）+ ALT拖动选词翻译 + 整页翻译 + 输入框连续3次空格翻译成英文
 // @match        *://*/*
 // @run-at       document-idle
@@ -29,7 +29,7 @@
     youdaoType: 2,
     debounceMs: 120,
     targetLanguage: 'zh-CN',
-    // 英文参考文字灰度：100 = 原 #b9b9b9；60 = 更浅；越小越淡。
+    // 原文文字保留原色相、降低不透明度：100=原色，60=原色的60%，越小越淡。
     englishTextOpacityPercent: 60
   };
 
@@ -1056,9 +1056,9 @@
   const GENERATED_CLASS = `${PAGE_PREFIX}-translation`;
   const CONTAINER_CLASS = `${PAGE_PREFIX}-translated-container`;
 
+  // 只在能独立排版的文本块中插入译文；结构容器交给其内部文本块处理。
   const BLOCK_TAGS = new Set([
     'div', 'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-    'article', 'section', 'header', 'footer', 'main', 'aside', 'nav',
     'blockquote', 'li', 'td', 'th'
   ]);
 
@@ -1099,7 +1099,17 @@
       if (BLOCK_TAGS.has(current.tagName?.toLowerCase())) return current;
       current = current.parentElement;
     }
-    return el;
+    return null;
+  }
+
+  function isSafeTranslationContainer(container) {
+    if (container.closest('header,footer,nav,aside,[role="navigation"],[role="menu"],[role="menubar"],[role="tablist"],[role="tree"]')) return false;
+    const style = getComputedStyle(container);
+    if (!['block', 'flow-root', 'list-item', 'table-cell'].includes(style.display)) return false;
+    if (style.whiteSpace === 'nowrap' || ['fixed', 'absolute'].includes(style.position)) return false;
+    // 外层 div / li 可能只是布局框架；避免在其中重复插入译文。
+    if (container.querySelector('div,p,h1,h2,h3,h4,h5,h6,section,article,ul,ol,table,nav,aside')) return false;
+    return true;
   }
 
   function extractTextNodes(root) {
@@ -1127,7 +1137,7 @@
     const groups = new Map();
     for (const node of textNodes) {
       const container = findBlockContainer(node.parentElement);
-      if (!container || container.classList?.contains(CONTAINER_CLASS)) continue;
+      if (!container || !isSafeTranslationContainer(container) || container.classList?.contains(CONTAINER_CLASS)) continue;
       if (!groups.has(container)) groups.set(container, { container, nodes: [] });
       groups.get(container).nodes.push(node);
     }
@@ -1159,18 +1169,38 @@
     return date + '｜' + detail;
   }
 
-  // 关闭整页翻译时恢复原文行内样式。
+  // 记录本次改动的样式，关闭翻译时精确恢复。
   const originalPageStyles = new Map();
-  function weakenOriginal(container) {
+
+  function fadedTextColor(element) {
+    const match = getComputedStyle(element).color.match(/^rgba?\\(\\s*(\\d+)[,\\s]+(\\d+)[,\\s]+(\\d+)(?:[,\\s/]+([\\d.]+))?\\s*\\)$/i);
+    if (!match) return null;
+    const alpha = match[4] === undefined ? 1 : Number(match[4]);
+    const percent = Math.max(0, Math.min(100, Number(CONFIG.englishTextOpacityPercent) || 0));
+    return `rgba(${match[1]}, ${match[2]}, ${match[3]}, ${alpha * percent / 100})`;
+  }
+
+  function weakenOriginal(container, nodes) {
     if (originalPageStyles.has(container)) return;
-    const computed = getComputedStyle(container);
-    const size = parseFloat(computed.fontSize) || 16;
-    originalPageStyles.set(container, {
-      fontSize: container.style.fontSize,
-      color: container.style.color
-    });
+    const size = parseFloat(getComputedStyle(container).fontSize) || 16;
+    const original = { fontSize: container.style.fontSize, textColors: [] };
+    const seen = new Set();
+    // 文字可能在子级 a/span 中，自身颜色会覆盖外层标题/段落的颜色。
+    for (const node of nodes) {
+      const element = node.parentElement;
+      if (!element || !container.contains(element) || seen.has(element)) continue;
+      seen.add(element);
+      const faded = fadedTextColor(element);
+      if (!faded) continue;
+      original.textColors.push({
+        element,
+        color: element.style.getPropertyValue('color'),
+        priority: element.style.getPropertyPriority('color')
+      });
+      element.style.setProperty('color', faded, 'important');
+    }
+    originalPageStyles.set(container, original);
     container.style.fontSize = Math.max(12, Math.round(size * .82)) + 'px';
-    container.style.color = `rgba(185, 185, 185, ${CONFIG.englishTextOpacityPercent / 100})`;
     return size;
   }
 
@@ -1179,7 +1209,7 @@
 
   async function translateGroup(group) {
     const { container, nodes } = group;
-    if (!container?.isConnected || container.classList.contains(CONTAINER_CLASS)) return;
+    if (!container?.isConnected || !isSafeTranslationContainer(container) || container.classList.contains(CONTAINER_CLASS)) return;
 
     const combinedText = nodes.map(n => n.textContent.trim()).filter(Boolean).join(' ');
     if (!combinedText || combinedText.length < 3) return;
@@ -1189,12 +1219,12 @@
       const translated = translateEnglishDate(combinedText) ?? await translateWithBrowser(combinedText);
       if (!translated || translated === combinedText || !isPageTranslating) return;
 
-      const bilingualEl = document.createElement('div');
+      const bilingualEl = document.createElement('span');
       bilingualEl.className = GENERATED_CLASS;
-      bilingualEl.style.cssText = 'margin:4px 0 0;padding:0;background:transparent;color:#1f2937;line-height:1.5;opacity:0;transition:opacity .3s;';
+      bilingualEl.style.cssText = 'display:block;margin:4px 0 0;padding:0;background:transparent;color:#1f2937;line-height:1.5;opacity:0;transition:opacity .3s;';
       bilingualEl.textContent = translated;
 
-      const originalSize = weakenOriginal(container);
+      const originalSize = weakenOriginal(container, nodes);
       bilingualEl.style.fontSize = (originalSize || parseFloat(getComputedStyle(container).fontSize) || 16) + 'px';
       container.classList.add(CONTAINER_CLASS);
       container.appendChild(bilingualEl);
@@ -1274,7 +1304,10 @@
       const original = originalPageStyles.get(container);
       if (original) {
         container.style.fontSize = original.fontSize;
-        container.style.color = original.color;
+        for (const item of original.textColors) {
+          if (item.color) item.element.style.setProperty('color', item.color, item.priority);
+          else item.element.style.removeProperty('color');
+        }
         originalPageStyles.delete(container);
       }
       container.classList.remove(CONTAINER_CLASS);
@@ -1714,7 +1747,7 @@
     try { sandboxMode = GM_info?.sandboxMode || 'unknown'; } catch {}
 
     console.log(
-      `[Word Tool] v4.6.0 initialized | browser=${browserName()} | sandbox=${sandboxMode} | Translator=${Boolean(getTranslatorAPI())}`
+      `[Word Tool] v4.6.3 initialized | browser=${browserName()} | sandbox=${sandboxMode} | Translator=${Boolean(getTranslatorAPI())}`
     );
   }
 
