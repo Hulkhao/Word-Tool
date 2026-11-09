@@ -1173,7 +1173,7 @@
   const originalPageStyles = new Map();
 
   function fadedTextColor(element) {
-    const match = getComputedStyle(element).color.match(/^rgba?\\(\\s*(\\d+)[,\\s]+(\\d+)[,\\s]+(\\d+)(?:[,\\s/]+([\\d.]+))?\\s*\\)$/i);
+    const match = getComputedStyle(element).color.match(/^rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)(?:[,\s/]+([\d.]+))?\s*\)$/i);
     if (!match) return null;
     const alpha = match[4] === undefined ? 1 : Number(match[4]);
     const percent = Math.max(0, Math.min(100, Number(CONFIG.englishTextOpacityPercent) || 0));
