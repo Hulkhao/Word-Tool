@@ -1169,7 +1169,7 @@
       fontWeight: container.style.fontWeight
     });
     container.style.fontSize = Math.max(12, Math.round(size * .82)) + 'px';
-    container.style.color = '#667085';
+    container.style.color = '#b9b9b9';
     container.style.fontWeight = '400';
     return size;
   }
