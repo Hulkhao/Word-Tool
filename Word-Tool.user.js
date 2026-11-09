@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Word Tool - 选词发音 & 翻译（Edge/Chrome）
 // @namespace    simpread/word-tool
-// @version      4.6.1
+// @version      4.6.2
 // @description  双击单词/技术标识符发音（_/-/camelCase 自动拆词顺序朗读 + 子词逐行释义 + 有道真人音频自动响度归一化 + TTS兜底，CSP兼容）+ ALT拖动选词翻译 + 整页翻译 + 输入框连续3次空格翻译成英文
 // @match        *://*/*
 // @run-at       document-idle
@@ -28,7 +28,9 @@
     triggerMode: 'dblclick',
     youdaoType: 2,
     debounceMs: 120,
-    targetLanguage: 'zh-CN'
+    targetLanguage: 'zh-CN',
+    // 英文参考文字灰度：100 = 原 #b9b9b9；60 = 更浅；越小越淡。
+    englishTextOpacityPercent: 60
   };
 
   function loadConfig() {
@@ -1165,12 +1167,10 @@
     const size = parseFloat(computed.fontSize) || 16;
     originalPageStyles.set(container, {
       fontSize: container.style.fontSize,
-      color: container.style.color,
-      fontWeight: container.style.fontWeight
+      color: container.style.color
     });
     container.style.fontSize = Math.max(12, Math.round(size * .82)) + 'px';
-    container.style.color = '#b9b9b9';
-    container.style.fontWeight = '400';
+    container.style.color = `rgba(185, 185, 185, ${CONFIG.englishTextOpacityPercent / 100})`;
     return size;
   }
 
@@ -1191,7 +1191,7 @@
 
       const bilingualEl = document.createElement('div');
       bilingualEl.className = GENERATED_CLASS;
-      bilingualEl.style.cssText = 'margin:4px 0 0;padding:0;background:transparent;color:#1f2937;font-weight:600;line-height:1.5;opacity:0;transition:opacity .3s;';
+      bilingualEl.style.cssText = 'margin:4px 0 0;padding:0;background:transparent;color:#1f2937;line-height:1.5;opacity:0;transition:opacity .3s;';
       bilingualEl.textContent = translated;
 
       const originalSize = weakenOriginal(container);
@@ -1275,7 +1275,6 @@
       if (original) {
         container.style.fontSize = original.fontSize;
         container.style.color = original.color;
-        container.style.fontWeight = original.fontWeight;
         originalPageStyles.delete(container);
       }
       container.classList.remove(CONTAINER_CLASS);
