@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Word Tool - 选词发音 & 翻译（Edge/Chrome）
 // @namespace    simpread/word-tool
-// @version      4.6.3
+// @version      4.6.4
 // @description  双击单词/技术标识符发音（_/-/camelCase 自动拆词顺序朗读 + 子词逐行释义 + 有道真人音频自动响度归一化 + TTS兜底，CSP兼容）+ ALT拖动选词翻译 + 整页翻译 + 输入框连续3次空格翻译成英文
 // @match        *://*/*
 // @run-at       document-idle
@@ -30,7 +30,7 @@
     debounceMs: 120,
     targetLanguage: 'zh-CN',
     // 原文文字保留原色相、降低不透明度：100=原色，60=原色的60%，越小越淡。
-    englishTextOpacityPercent: 60
+    englishTextOpacityPercent: 30
   };
 
   function loadConfig() {
@@ -1055,6 +1055,7 @@
   const PAGE_PREFIX = 'wt-page';
   const GENERATED_CLASS = `${PAGE_PREFIX}-translation`;
   const CONTAINER_CLASS = `${PAGE_PREFIX}-translated-container`;
+  const COMPACT_CLASS = PAGE_PREFIX + '-compact-translation';
 
   // 只在能独立排版的文本块中插入译文；结构容器交给其内部文本块处理。
   const BLOCK_TAGS = new Set([
@@ -1065,19 +1066,20 @@
   const EXCLUDE_TAGS = new Set([
     'script', 'style', 'noscript', 'iframe', 'object', 'embed',
     'canvas', 'svg', 'math', 'code', 'pre', 'kbd', 'samp', 'var',
-    'textarea', 'input', 'select', 'option', 'template', 'meta', 'link', 'head', 'title', 'button'
+    'textarea', 'input', 'select', 'option', 'template', 'meta', 'link', 'head', 'title'
   ]);
 
   const EXCLUDE_SELECTORS = [
     '[data-translate="no"]', '.notranslate', '[translate="no"]',
     '[role="tooltip"]', '.tooltip', '.alt-text',
-    `.${GENERATED_CLASS}`
+    `.${GENERATED_CLASS}`, '.' + COMPACT_CLASS
   ];
 
   function isExcluded(el) {
     if (!el || !el.tagName) return true;
     const tag = el.tagName.toLowerCase();
     if (EXCLUDE_TAGS.has(tag)) return true;
+    if (el.closest?.('button') && !isNavigationArea(el)) return true;
     if (el.isContentEditable) return true;
     if (el.closest?.(`#${PAGE_PREFIX}-btn, #wt-translate-popup, #wt-pronounce-tooltip, #wt-settings-modal`)) return true;
     return EXCLUDE_SELECTORS.some(sel => {
@@ -1093,6 +1095,34 @@
     return rect.width > 0 || rect.height > 0;
   }
 
+// 菜单仅换文字，不增加第二行。侧栏可能没有 nav/aside 标签，用窄栏+链接密度识别。
+  const NAVIGATION_SCOPE = 'nav,aside,[role="navigation"],[role="menu"],[role="menubar"],[role="tablist"],[role="tree"],[class*="sidebar" i],[class*="side-nav" i],[id*="sidebar" i]';
+
+  function isLikelySidebar(el) {
+    if (!el?.closest?.('a,button,h1,h2,h3,h4,h5,h6,label,[role="menuitem"],[role="treeitem"]')) return false;
+    let ancestor = el;
+    for (let depth = 0; ancestor && ancestor !== document.body && depth < 6; depth++, ancestor = ancestor.parentElement) {
+      const rect = ancestor.getBoundingClientRect();
+      if (rect.width < 110 || rect.width > window.innerWidth * .38 || rect.left > window.innerWidth * .35) continue;
+      if (ancestor.querySelectorAll('a[href],button').length >= 4) return true;
+    }
+    return false;
+  }
+
+  function isNavigationArea(el) {
+    if (!el?.closest) return false;
+    if (el.closest(NAVIGATION_SCOPE)) return true;
+    if (el.closest('header,[role="banner"]') && el.closest('a,button,[role="menuitem"],[role="tab"]')) return true;
+    return isLikelySidebar(el);
+  }
+
+  function isNavigationTextNode(node) {
+    const text = node.textContent.trim();
+    if (!/[a-z]/i.test(text) || text.length > 160 || detectLanguage(text) === 'zh-CN') return false;
+    if (node.parentElement?.closest('[class*="logo" i],[class*="brand" i],[aria-hidden="true"]')) return false;
+    return isNavigationArea(node.parentElement);
+  }
+
   function findBlockContainer(el) {
     let current = el;
     while (current && current !== document.body) {
@@ -1103,7 +1133,7 @@
   }
 
   function isSafeTranslationContainer(container) {
-    if (container.closest('header,footer,nav,aside,[role="navigation"],[role="menu"],[role="menubar"],[role="tablist"],[role="tree"]')) return false;
+    if (isNavigationArea(container) || container.closest('header,footer')) return false;
     const style = getComputedStyle(container);
     if (!['block', 'flow-root', 'list-item', 'table-cell'].includes(style.display)) return false;
     if (style.whiteSpace === 'nowrap' || ['fixed', 'absolute'].includes(style.position)) return false;
@@ -1144,6 +1174,21 @@
     return Array.from(groups.values());
   }
 
+// 导航/菜单逐个替换文字；正文仍按段落中英对照。
+  function groupByDisplayMode(textNodes) {
+    const compact = [];
+    const bodyNodes = [];
+    for (const node of textNodes) {
+      const fixedTranslation = translateEnglishMetadata(node.textContent.trim());
+      if (fixedTranslation || isNavigationTextNode(node)) {
+        compact.push({ kind: 'compact', container: node.parentElement, node, fixedTranslation });
+      } else {
+        bodyNodes.push(node);
+      }
+    }
+    return [...compact, ...groupByParagraph(bodyNodes)];
+  }
+
   // 英文日期使用确定性月份映射，不依赖翻译模型。
   const ENGLISH_MONTHS = {
     jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3,
@@ -1168,6 +1213,43 @@
     if (video) return date + '｜视频：' + video[1] + '分钟';
     return date + '｜' + detail;
   }
+
+// 支持日期与阅读/视频时长处于独立的 span/time 节点。
+  function translateEnglishMetadata(text) {
+    const value = String(text || '').trim();
+    const date = translateEnglishDate(value);
+    if (date) return date;
+    const detail = value.replace(/^[|｜]\s*/, '');
+    const article = detail.match(/^Article:\s*(\d+)\s+minutes?\s+to\s+read$/i);
+    if (article) return '文章：阅读约' + article[1] + '分钟';
+    const video = detail.match(/^(\d+)\s+minutes?\s+video$/i);
+    if (video) return '视频：' + video[1] + '分钟';
+    return null;
+  }
+
+  // 高频 UI 标签本地转换，其余菜单项交给现有浏览器 Translator API。
+  const STATIC_UI_TRANSLATIONS = new Map(Object.entries({
+    'ux training & courses': '用户体验培训与课程',
+    'articles & resources': '文章与资源',
+    'consulting': '咨询',
+    'about us': '关于我们',
+    'get started': '开始',
+    'platforms': '平台',
+    'technologies': '技术',
+    'community': '社区',
+    'documentation': '文档',
+    'downloads': '下载',
+    'support': '支持',
+    'sign in': '登录',
+    'topics': '主题',
+    'popular articles': '热门文章',
+    'most recent': '最新',
+    'most popular': '最受欢迎',
+    'videos only': '仅视频',
+    'articles only': '仅文章',
+    'all technologies': '所有技术',
+    'safari services': 'Safari 服务'
+  }));
 
   // 记录本次改动的样式，关闭翻译时精确恢复。
   const originalPageStyles = new Map();
@@ -1202,6 +1284,45 @@
     originalPageStyles.set(container, original);
     container.style.fontSize = Math.max(12, Math.round(size * .82)) + 'px';
     return size;
+  }
+
+// 菜单/日期的英文保留在 DOM 中，界面只显示中文；悬停中文可看英文原文。
+  const compactTranslations = new Map();
+
+  async function translateCompact(group) {
+    const { node, fixedTranslation } = group;
+    if (!node?.isConnected || !isPageTranslating || node.parentElement?.closest('.' + COMPACT_CLASS)) return;
+
+    const originalText = node.textContent;
+    const source = originalText.trim();
+    if (!source) return;
+    try {
+      const translated = fixedTranslation
+        || STATIC_UI_TRANSLATIONS.get(source.toLowerCase())
+        || await translateWithBrowser(source);
+      if (!translated || translated === source || !isPageTranslating || !node.isConnected) return;
+
+      const wrapper = document.createElement('span');
+      wrapper.className = COMPACT_CLASS;
+      wrapper.title = source;
+      const chinese = document.createElement('span');
+      chinese.lang = 'zh-CN';
+      chinese.textContent = (originalText.match(/^\s*/) || [''])[0]
+        + translated
+        + (originalText.match(/\s*$/) || [''])[0];
+      const original = document.createElement('span');
+      original.style.display = 'none';
+      original.setAttribute('aria-hidden', 'true');
+
+      const parent = node.parentNode;
+      parent.replaceChild(wrapper, node);
+      wrapper.appendChild(chinese);
+      original.appendChild(node);
+      wrapper.appendChild(original);
+      compactTranslations.set(wrapper, node);
+    } catch (err) {
+      console.warn('[Word Tool] Compact translate failed:', err);
+    }
   }
 
   const translatedElements = new Set();
@@ -1240,6 +1361,7 @@
   let pageTranslationQueue = [];
   let pageProcessing = false;
   let pageObserver = null;
+  const observedGroupContainers = new Set();
 
   async function processPageQueue() {
     if (pageProcessing) return;
@@ -1247,7 +1369,8 @@
     try {
       while (pageTranslationQueue.length > 0 && isPageTranslating) {
         const group = pageTranslationQueue.shift();
-        await translateGroup(group);
+        if (group.kind === 'compact') await translateCompact(group);
+        else await translateGroup(group);
       }
     } finally {
       pageProcessing = false;
@@ -1266,24 +1389,30 @@
     isPageTranslating = true;
     updateFloatingButton(true);
 
-    const groups = groupByParagraph(extractTextNodes(document.body));
+    const groups = groupByDisplayMode(extractTextNodes(document.body));
 
     pageObserver?.disconnect();
     pageObserver = new IntersectionObserver(entries => {
       for (const entry of entries) {
         if (!entry.isIntersecting || !isPageTranslating) continue;
-        const group = entry.target.__wtTranslationGroup;
-        if (group && !entry.target.classList.contains(CONTAINER_CLASS)) {
-          pageTranslationQueue.push(group);
+        const visibleGroups = entry.target.__wtTranslationGroups;
+        if (visibleGroups?.length && !entry.target.classList.contains(CONTAINER_CLASS)) {
+          pageTranslationQueue.push(...visibleGroups);
           processPageQueue();
         }
         pageObserver.unobserve(entry.target);
       }
     }, { rootMargin: '250px 0px' });
 
+    const groupsByContainer = new Map();
     for (const group of groups) {
-      group.container.__wtTranslationGroup = group;
-      pageObserver.observe(group.container);
+      if (!groupsByContainer.has(group.container)) groupsByContainer.set(group.container, []);
+      groupsByContainer.get(group.container).push(group);
+    }
+    for (const [container, containerGroups] of groupsByContainer) {
+      container.__wtTranslationGroups = containerGroups;
+      observedGroupContainers.add(container);
+      pageObserver.observe(container);
     }
   }
 
@@ -1293,6 +1422,16 @@
     pageObserver?.disconnect();
     pageObserver = null;
     updateFloatingButton(false);
+
+    for (const container of observedGroupContainers) {
+      try { delete container.__wtTranslationGroups; } catch {}
+    }
+    observedGroupContainers.clear();
+
+    for (const [wrapper, sourceNode] of compactTranslations) {
+      if (wrapper.isConnected) wrapper.replaceWith(sourceNode);
+    }
+    compactTranslations.clear();
 
     for (const el of translatedElements) {
       el.style.opacity = '0';
@@ -1747,7 +1886,7 @@
     try { sandboxMode = GM_info?.sandboxMode || 'unknown'; } catch {}
 
     console.log(
-      `[Word Tool] v4.6.3 initialized | browser=${browserName()} | sandbox=${sandboxMode} | Translator=${Boolean(getTranslatorAPI())}`
+      `[Word Tool] v4.6.4 initialized | browser=${browserName()} | sandbox=${sandboxMode} | Translator=${Boolean(getTranslatorAPI())}`
     );
   }
 
