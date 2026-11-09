@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Word Tool - 选词发音 & 翻译（Edge/Chrome）
 // @namespace    simpread/word-tool
-// @version      4.6.4
+// @version      4.6.5
 // @description  双击单词/技术标识符发音（_/-/camelCase 自动拆词顺序朗读 + 子词逐行释义 + 有道真人音频自动响度归一化 + TTS兜底，CSP兼容）+ ALT拖动选词翻译 + 整页翻译 + 输入框连续3次空格翻译成英文
 // @match        *://*/*
 // @run-at       document-idle
@@ -1176,7 +1176,7 @@
     return Array.from(groups.values());
   }
 
-// 导航/菜单逐个替换文字；正文仍按段落中英对照。
+// 导航/菜单沿原行并排显示中文和英文，正文仍按段落中英对照。
   function groupByDisplayMode(textNodes) {
     const compact = [];
     const bodyNodes = [];
@@ -1288,7 +1288,7 @@
     return size;
   }
 
-// 菜单/日期的英文保留在 DOM 中，界面只显示中文；悬停中文可看英文原文。
+// 菜单与日期：中文置前、英文置后，同一行横向滚动；原文节点始终可见。
   const compactTranslations = new Map();
 
   async function translateCompact(group) {
@@ -1304,18 +1304,25 @@
         || await translateWithBrowser(source);
       if (!translated || translated === source || !isPageTranslating || !node.isConnected) return;
 
+      // 读取替换前原文实际宽度，使导航项的占位宽度保持不变。
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const originalWidth = range.getBoundingClientRect().width;
+
       const wrapper = document.createElement('span');
       wrapper.className = COMPACT_CLASS;
-      wrapper.title = source;
+      wrapper.style.cssText = 'display:inline-flex;align-items:baseline;vertical-align:middle;white-space:nowrap;overflow-x:auto;overflow-y:hidden;max-width:100%;min-width:0;scrollbar-width:thin;';
+      if (originalWidth > 0) wrapper.style.width = Math.ceil(originalWidth) + 'px';
+
       const chinese = document.createElement('span');
       chinese.lang = 'zh-CN';
-      chinese.textContent = (originalText.match(/^\s*/) || [''])[0]
-        + translated
-        + (originalText.match(/\s*$/) || [''])[0];
-      const original = document.createElement('span');
-      original.style.display = 'none';
-      original.setAttribute('aria-hidden', 'true');
+      chinese.style.flex = 'none';
+      chinese.textContent = (originalText.match(/^\s*/) || [''])[0] + translated;
 
+      const original = document.createElement('span');
+      original.style.cssText = 'flex:none;margin-left:12px;opacity:' +
+        Math.max(0, Math.min(100, Number(CONFIG.englishTextOpacityPercent))) / 100 + ';';
+      // 保留原始 Text 节点及其链接、按钮等父级行为。
       const parent = node.parentNode;
       parent.replaceChild(wrapper, node);
       wrapper.appendChild(chinese);
@@ -1888,7 +1895,7 @@
     try { sandboxMode = GM_info?.sandboxMode || 'unknown'; } catch {}
 
     console.log(
-      `[Word Tool] v4.6.4 initialized | browser=${browserName()} | sandbox=${sandboxMode} | Translator=${Boolean(getTranslatorAPI())}`
+      `[Word Tool] v4.6.5 initialized | browser=${browserName()} | sandbox=${sandboxMode} | Translator=${Boolean(getTranslatorAPI())}`
     );
   }
 
