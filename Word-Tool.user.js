@@ -1290,6 +1290,16 @@
 
 // 菜单与日期：中文置前、英文置后，同一行横向滚动；原文节点始终可见。
   const compactTranslations = new Map();
+  const originalPlaceholders = new Map();
+
+  function localizeFilterPlaceholder() {
+    for (const input of document.querySelectorAll('input[placeholder]')) {
+      if (input.getAttribute('placeholder')?.trim().toLowerCase() !== 'filter') continue;
+      if (originalPlaceholders.has(input)) continue;
+      originalPlaceholders.set(input, input.getAttribute('placeholder'));
+      input.setAttribute('placeholder', '筛选 / Filter');
+    }
+  }
 
   async function translateCompact(group) {
     const { node, fixedTranslation } = group;
@@ -1397,6 +1407,7 @@
 
     isPageTranslating = true;
     updateFloatingButton(true);
+    localizeFilterPlaceholder();
 
     const groups = groupByDisplayMode(extractTextNodes(document.body));
 
@@ -1441,6 +1452,10 @@
       if (wrapper.isConnected) wrapper.replaceWith(sourceNode);
     }
     compactTranslations.clear();
+    for (const [input, placeholder] of originalPlaceholders) {
+      input.setAttribute('placeholder', placeholder);
+    }
+    originalPlaceholders.clear();
 
     for (const el of translatedElements) {
       el.style.opacity = '0';
