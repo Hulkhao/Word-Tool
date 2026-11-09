@@ -1099,7 +1099,7 @@
   const NAVIGATION_SCOPE = 'nav,aside,[role="navigation"],[role="menu"],[role="menubar"],[role="tablist"],[role="tree"],[class*="sidebar" i],[class*="side-nav" i],[id*="sidebar" i]';
 
   function isLikelySidebar(el) {
-    if (!el?.closest?.('a,button,h1,h2,h3,h4,h5,h6,label,[role="menuitem"],[role="treeitem"]')) return false;
+    if (!el?.getBoundingClientRect) return false;
     let ancestor = el;
     for (let depth = 0; ancestor && ancestor !== document.body && depth < 6; depth++, ancestor = ancestor.parentElement) {
       const rect = ancestor.getBoundingClientRect();
@@ -1120,6 +1120,8 @@
     const text = node.textContent.trim();
     if (!/[a-z]/i.test(text) || text.length > 160 || detectLanguage(text) === 'zh-CN') return false;
     if (node.parentElement?.closest('[class*="logo" i],[class*="brand" i],[aria-hidden="true"]')) return false;
+    if (STATIC_UI_TRANSLATIONS.has(text.toLowerCase())
+        && node.parentElement?.closest('a,button,[role="tab"],[role="menuitem"]')) return true;
     return isNavigationArea(node.parentElement);
   }
 
