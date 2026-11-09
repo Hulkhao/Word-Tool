@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Word Tool - 选词发音 & 翻译（Edge/Chrome）
 // @namespace    simpread/word-tool
-// @version      4.6.0
+// @version      4.6.1
 // @description  双击单词/技术标识符发音（_/-/camelCase 自动拆词顺序朗读 + 子词逐行释义 + 有道真人音频自动响度归一化 + TTS兜底，CSP兼容）+ ALT拖动选词翻译 + 整页翻译 + 输入框连续3次空格翻译成英文
 // @match        *://*/*
 // @run-at       document-idle
@@ -1132,6 +1132,48 @@
     return Array.from(groups.values());
   }
 
+  // 英文日期使用确定性月份映射，不依赖翻译模型。
+  const ENGLISH_MONTHS = {
+    jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3,
+    apr: 4, april: 4, may: 5, jun: 6, june: 6,
+    jul: 7, july: 7, aug: 8, august: 8,
+    sep: 9, sept: 9, september: 9, oct: 10, october: 10,
+    nov: 11, november: 11, dec: 12, december: 12
+  };
+
+  function translateEnglishDate(text) {
+    const match = text.match(/^([a-z]{3,9})\.?\s+(\d{1,2}),?\s+(\d{4})(?:\s*[|｜]\s*(.+))?$/i);
+    if (!match) return null;
+    const month = ENGLISH_MONTHS[match[1].toLowerCase()];
+    const day = Number(match[2]);
+    if (!month || day < 1 || day > new Date(Number(match[3]), month, 0).getDate()) return null;
+    const date = match[3] + '年' + month + '月' + day + '日';
+    const detail = match[4]?.trim();
+    if (!detail) return date;
+    const article = detail.match(/^Article:\s*(\d+)\s+minutes?\s+to\s+read$/i);
+    if (article) return date + '｜文章：阅读约' + article[1] + '分钟';
+    const video = detail.match(/^(\d+)\s+minutes?\s+video$/i);
+    if (video) return date + '｜视频：' + video[1] + '分钟';
+    return date + '｜' + detail;
+  }
+
+  // 关闭整页翻译时恢复原文行内样式。
+  const originalPageStyles = new Map();
+  function weakenOriginal(container) {
+    if (originalPageStyles.has(container)) return;
+    const computed = getComputedStyle(container);
+    const size = parseFloat(computed.fontSize) || 16;
+    originalPageStyles.set(container, {
+      fontSize: container.style.fontSize,
+      color: container.style.color,
+      fontWeight: container.style.fontWeight
+    });
+    container.style.fontSize = Math.max(12, Math.round(size * .82)) + 'px';
+    container.style.color = '#667085';
+    container.style.fontWeight = '400';
+    return size;
+  }
+
   const translatedElements = new Set();
   const translatedContainers = new Set();
 
@@ -1144,14 +1186,16 @@
     if (detectLanguage(combinedText) === 'zh-CN') return;
 
     try {
-      const translated = await translateWithBrowser(combinedText);
+      const translated = translateEnglishDate(combinedText) ?? await translateWithBrowser(combinedText);
       if (!translated || translated === combinedText || !isPageTranslating) return;
 
       const bilingualEl = document.createElement('div');
       bilingualEl.className = GENERATED_CLASS;
-      bilingualEl.style.cssText = 'margin:6px 0;padding:6px 10px;background:rgba(0,200,100,.04);font-size:.9em;color:#444;line-height:1.6;opacity:0;transition:opacity .3s;border-radius:4px;';
+      bilingualEl.style.cssText = 'margin:4px 0 0;padding:0;background:transparent;color:#1f2937;font-weight:600;line-height:1.5;opacity:0;transition:opacity .3s;';
       bilingualEl.textContent = translated;
 
+      const originalSize = weakenOriginal(container);
+      bilingualEl.style.fontSize = (originalSize || parseFloat(getComputedStyle(container).fontSize) || 16) + 'px';
       container.classList.add(CONTAINER_CLASS);
       container.appendChild(bilingualEl);
       translatedContainers.add(container);
@@ -1227,6 +1271,13 @@
     translatedElements.clear();
 
     for (const container of translatedContainers) {
+      const original = originalPageStyles.get(container);
+      if (original) {
+        container.style.fontSize = original.fontSize;
+        container.style.color = original.color;
+        container.style.fontWeight = original.fontWeight;
+        originalPageStyles.delete(container);
+      }
       container.classList.remove(CONTAINER_CLASS);
       try { delete container.__wtTranslationGroup; } catch {}
     }
