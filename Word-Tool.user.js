@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Word Tool - 选词发音 & 翻译（Edge/Chrome）
 // @namespace    simpread/word-tool
-// @version      4.6.3
+// @version      4.6.4
 // @description  双击单词/技术标识符发音（_/-/camelCase 自动拆词顺序朗读 + 子词逐行释义 + 有道真人音频自动响度归一化 + TTS兜底，CSP兼容）+ ALT拖动选词翻译 + 整页翻译 + 输入框连续3次空格翻译成英文
 // @match        *://*/*
 // @run-at       document-idle
@@ -1169,15 +1169,70 @@
     return date + '｜' + detail;
   }
 
+  // 解析浏览器规范化后的 rgb()/rgba() 颜色。
+  function parseCssColor(value) {
+    const match = String(value).match(/^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,/\s]+([\d.]+%?))?\s*\)$/i);
+    if (!match) return null;
+    const alphaText = match[4];
+    const alpha = alphaText === undefined
+      ? 1
+      : Number.parseFloat(alphaText) / (alphaText.endsWith("%") ? 100 : 1);
+    return {
+      rgb: [Number(match[1]), Number(match[2]), Number(match[3])],
+      alpha: Math.max(0, Math.min(1, alpha))
+    };
+  }
+
+  // 合成文本节点到页面根节点之间的背景色，兼容半透明容器。
+  function getEffectiveBackgroundColor(element) {
+    const rootStyle = getComputedStyle(document.documentElement);
+    const bodyStyle = document.body ? getComputedStyle(document.body) : null;
+    const colorScheme = (rootStyle.colorScheme || "") + " " + (bodyStyle?.colorScheme || "");
+    let background = /dark/i.test(colorScheme) ? [18, 18, 18] : [255, 255, 255];
+    const layers = [];
+
+    for (let current = element; current; current = current.parentElement) {
+      const color = parseCssColor(getComputedStyle(current).backgroundColor);
+      if (color && color.alpha > 0) layers.push(color);
+    }
+
+    for (let i = layers.length - 1; i >= 0; i--) {
+      const layer = layers[i];
+      background = layer.rgb.map((channel, index) =>
+        Math.round(channel * layer.alpha + background[index] * (1 - layer.alpha))
+      );
+    }
+    return background;
+  }
+
+  function relativeLuminance(rgb) {
+    const channels = rgb.map(channel => {
+      const value = channel / 255;
+      return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+  }
+
+  function isDarkBackground(element) {
+    return relativeLuminance(getEffectiveBackgroundColor(element)) < 0.45;
+  }
+
+  function getTranslationTextColor(element) {
+    return isDarkBackground(element) ? "#e6edf3" : "#1f2937";
+  }
+
   // 记录本次改动的样式，关闭翻译时精确恢复。
   const originalPageStyles = new Map();
 
   function fadedTextColor(element) {
-    const match = getComputedStyle(element).color.match(/^rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)(?:[,\s/]+([\d.]+))?\s*\)$/i);
-    if (!match) return null;
-    const alpha = match[4] === undefined ? 1 : Number(match[4]);
+    const color = parseCssColor(getComputedStyle(element).color);
+    if (!color) return null;
     const percent = Math.max(0, Math.min(100, Number(CONFIG.englishTextOpacityPercent) || 0));
-    return `rgba(${match[1]}, ${match[2]}, ${match[3]}, ${alpha * percent / 100})`;
+    // 深色背景下保留原文字色相，但保证原文仍可读；浅色背景沿用原有淡化比例。
+    const alpha = isDarkBackground(element)
+      ? Math.max(0.7, color.alpha * 0.72)
+      : color.alpha * percent / 100;
+    return "rgba(" + color.rgb.join(", ") + ", " + alpha + ")";
   }
 
   function weakenOriginal(container, nodes) {
@@ -1221,7 +1276,7 @@
 
       const bilingualEl = document.createElement('span');
       bilingualEl.className = GENERATED_CLASS;
-      bilingualEl.style.cssText = 'display:block;margin:4px 0 0;padding:0;background:transparent;color:#1f2937;line-height:1.5;opacity:0;transition:opacity .3s;';
+      bilingualEl.style.cssText = `display:block;margin:4px 0 0;padding:0;background:transparent;color:${getTranslationTextColor(container)};line-height:1.5;opacity:0;transition:opacity .3s;`;
       bilingualEl.textContent = translated;
 
       const originalSize = weakenOriginal(container, nodes);
@@ -1747,7 +1802,7 @@
     try { sandboxMode = GM_info?.sandboxMode || 'unknown'; } catch {}
 
     console.log(
-      `[Word Tool] v4.6.3 initialized | browser=${browserName()} | sandbox=${sandboxMode} | Translator=${Boolean(getTranslatorAPI())}`
+      `[Word Tool] v4.6.4 initialized | browser=${browserName()} | sandbox=${sandboxMode} | Translator=${Boolean(getTranslatorAPI())}`
     );
   }
 
